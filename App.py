@@ -114,7 +114,7 @@ if st.button("Generate a Summary"):
                 summary_ids = t5_model.generate(input_ids, max_length=200, num_beams=4, early_stopping=True)
                 final_summary = t5_tokenizer.decode(summary_ids[0], skip_special_tokens=True)
 
-                st.success("Generated Summary:")
+                st.success("Abstractive Summary:")
                 st.write(final_summary)
             else:
                 st.warning("No relevant responses found.")
