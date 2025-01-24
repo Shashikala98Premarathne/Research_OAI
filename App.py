@@ -5,6 +5,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import normalize
 from sentence_transformers import SentenceTransformer
 from transformers import T5Tokenizer, T5ForConditionalGeneration
+from rouge_score import rouge_scorer
 import streamlit as st
 
 # Load Preprocessed Data and Embeddings
@@ -23,8 +24,9 @@ t5_model = T5ForConditionalGeneration.from_pretrained("t5-small")
 
 # Streamlit Web Interface
 st.title("Open Government Consultation")
-st.markdown("<h3 style='color:blue;'>Use this tool to summarize relevant responses</h3>", unsafe_allow_html=True)
+st.markdown("<h3 style='color:blue;'>Your Feedback is Highly Valued and Crucial in Shaping Better Governance</h3>", unsafe_allow_html=True)
 
+# User Input for Keywords
 st.write("Please enter the keywords:")
 col1, col2 = st.columns(2)
 
@@ -34,79 +36,90 @@ with col1:
 with col2:
     keyword2 = st.text_input("Keyword 2")
 
-# Submission Summary
-st.subheader("Submission Summary")
-output = st.empty()
+# Function to calculate cosine similarity
+def calculate_cosine_similarity(query_embeddings, response_embeddings):
+    similarities = {}
+    for response_id, embedding in response_embeddings.items():
+        response_embedding_numpy = embedding.detach().cpu().numpy()  # Ensure tensor is on CPU
+        response_embedding_normalized = normalize(response_embedding_numpy.reshape(1, -1), axis=1)
+        max_similarity = max(
+            cosine_similarity(query_embeddings, response_embedding_normalized).flatten()
+        )
+        similarities[response_id] = max_similarity
+    return similarities
 
-# Process User Input
-if st.button("Generate a new submission"):
+# Main Execution Block
+if st.button("Generate a Summary"):
     if keyword1 or keyword2:
         try:
             user_keywords = [kw.strip() for kw in [keyword1, keyword2] if kw.strip()]
-            
-            # Debug: Show entered keywords
-            st.write(f"Entered keywords: {user_keywords}")
 
             # Generate Embeddings for User Keywords
             keyword_embeddings = model.encode(user_keywords, convert_to_tensor=True)
-            keyword_embeddings_cpu = normalize(keyword_embeddings.cpu().numpy(), axis=1)
+            keyword_embeddings_cpu = normalize(keyword_embeddings.detach().cpu().numpy(), axis=1)
 
-            # Function to calculate cosine similarity
-            def calculate_cosine_similarity(query_embeddings, response_embeddings):
-                similarities = {}
-                for response_id, embedding in response_embeddings.items():
-                    response_embedding_numpy = embedding.detach().cpu().numpy()
-                    response_embedding_normalized = normalize(response_embedding_numpy.reshape(1, -1), axis=1)
-                    max_similarity = max(
-                        cosine_similarity(query_embeddings, response_embedding_normalized).flatten()
-                    )
-                    similarities[response_id] = max_similarity
-                return similarities
-
-            # Calculate Cosine Similarity for User Keywords
+            # Calculate Cosine Similarity between User Keywords and Responses
             response_similarities = {}
             for response_id, embedding in response_embeddings.items():
                 response_similarities[response_id] = calculate_cosine_similarity(keyword_embeddings_cpu, {response_id: embedding})[response_id]
 
-            # Dynamic Threshold
-            similarity_scores = list(response_similarities.values())
-            dynamic_threshold = np.percentile(similarity_scores, 85)
+            # Dynamic Grid Search to Find Best Threshold
+            threshold_range = np.arange(0.0, 1.01, 0.01)
+            best_threshold = None
+            best_rouge1_fmeasure = -float("inf")
+            filtered_responses_best = None
 
-            # Filter Responses Based on Threshold
-            filtered_responses = {
-                response_id: sim for response_id, sim in response_similarities.items() if sim >= dynamic_threshold
-            }
+            for threshold in threshold_range:
+                # Filter Responses Based on Threshold
+                filtered_responses = {
+                    response_id: sim for response_id, sim in response_similarities.items() if sim >= threshold
+                }
 
-            TOP_N = 5
-            if not filtered_responses:
-                filtered_responses = dict(
-                    sorted(response_similarities.items(), key=lambda x: x[1], reverse=True)[:TOP_N]
-                )
+                if not filtered_responses:
+                    continue
 
-            filtered_texts = [
-                " ".join(df_cleaned.loc[df_cleaned['ResponseID'] == resp_id, 'Responses'].values[0])
-                for resp_id in filtered_responses.keys()
-            ]
+                # Combine Filtered Responses into a Single String
+                filtered_reference = " ".join([
+                    df_cleaned.loc[df_cleaned['ResponseID'] == resp_id, 'Responses'].values[0]
+                    for resp_id in filtered_responses.keys()
+                ])
 
-            if not filtered_texts:
-                filtered_texts = ["No relevant responses found."]
+                # Prepare Input for T5 Summarization
+                input_text = "summarize: " + filtered_reference
+                input_ids = t5_tokenizer.encode(input_text, return_tensors="pt", truncation=True)
 
-            # Debug: Show filtered responses
-            st.write(f"Filtered Responses: {filtered_texts}")
+                # Generate Summary
+                summary_ids = t5_model.generate(input_ids, max_length=200, num_beams=4, early_stopping=True)
+                summary = t5_tokenizer.decode(summary_ids[0], skip_special_tokens=True)
 
-            # Prepare Input for T5 Summarization
-            input_text = "summarize: " + " ".join(filtered_texts)
-            input_ids = t5_tokenizer.encode(input_text, return_tensors="pt", truncation=True)
+                # Evaluate Using ROUGE-1 F-Measure
+                rouge_scorer_instance = rouge_scorer.RougeScorer(['rouge1'], use_stemmer=True)
+                rouge_scores = rouge_scorer_instance.score(filtered_reference, summary)
+                rouge1_fmeasure = rouge_scores['rouge1'].fmeasure
 
-            # Generate Summary
-            summary_ids = t5_model.generate(input_ids, max_length=200, num_beams=8, length_penalty=1.5, early_stopping=True)
-            summary = t5_tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+                # Update Best Threshold
+                if rouge1_fmeasure > best_rouge1_fmeasure:
+                    best_rouge1_fmeasure = rouge1_fmeasure
+                    best_threshold = threshold
+                    filtered_responses_best = filtered_responses
 
-            # Display the Summary
-            output.subheader("Generated Summary")
-            output.text(summary)
+            # Generate Final Summary Using Best Threshold
+            if filtered_responses_best:
+                final_reference = " ".join([
+                    df_cleaned.loc[df_cleaned['ResponseID'] == resp_id, 'Responses'].values[0]
+                    for resp_id in filtered_responses_best.keys()
+                ])
+                input_text = "summarize: " + final_reference
+                input_ids = t5_tokenizer.encode(input_text, return_tensors="pt", truncation=True)
+                summary_ids = t5_model.generate(input_ids, max_length=200, num_beams=4, early_stopping=True)
+                final_summary = t5_tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+
+                st.success("Generated Summary:")
+                st.write(final_summary)
+            else:
+                st.warning("No relevant responses found.")
 
         except Exception as e:
-            st.error(f"An error occurred during processing: {e}")
+            st.error(f"An error occurred: {str(e)}")
     else:
-        output.text("Please enter at least one keyword to generate a submission.")
+        st.warning("Please enter at least one keyword.")
