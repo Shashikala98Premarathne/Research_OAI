@@ -1,119 +1,112 @@
-{
- "cells": [
-  {
-   "cell_type": "code",
-   "execution_count": null,
-   "metadata": {},
-   "outputs": [],
-   "source": [
-    "import pickle\n",
-    "import pandas as pd\n",
-    "from sklearn.metrics.pairwise import cosine_similarity\n",
-    "from sklearn.preprocessing import normalize\n",
-    "from sentence_transformers import SentenceTransformer\n",
-    "from transformers import T5Tokenizer, T5ForConditionalGeneration\n",
-    "\n",
-    "# Step 1: Load Preprocessed Data and Embeddings\n",
-    "try:\n",
-    "    # Load the cleaned DataFrame\n",
-    "    df_cleaned = pd.read_csv(\"df_cleaned.csv\")\n",
-    "    print(\"Loaded preprocessed data from df_cleaned.csv\")\n",
-    "    \n",
-    "    # Load precomputed response embeddings\n",
-    "    with open(\"response_embeddings.pkl\", \"rb\") as f:\n",
-    "        response_embeddings = pickle.load(f)\n",
-    "    print(\"Loaded precomputed response embeddings from response_embeddings.pkl\")\n",
-    "except FileNotFoundError as e:\n",
-    "    print(f\"Error: {e}\")\n",
-    "    print(\"Ensure that df_cleaned.csv and response_embeddings.pkl are generated and available.\")\n",
-    "    exit()\n",
-    "\n",
-    "# Step 2: Initialize SentenceTransformer and T5 models\n",
-    "model = SentenceTransformer('all-mpnet-base-v2')\n",
-    "t5_tokenizer = T5Tokenizer.from_pretrained(\"t5-small\")\n",
-    "t5_model = T5ForConditionalGeneration.from_pretrained(\"t5-small\")\n",
-    "\n",
-    "# Step 3: Accept User Keywords\n",
-    "user_keywords = input(\"Enter keywords for summarization (comma-separated): \")\n",
-    "user_keywords = [kw.strip() for kw in user_keywords.split(\",\")]\n",
-    "\n",
-    "# Step 4: Generate Embeddings for User Keywords\n",
-    "keyword_embeddings = model.encode(user_keywords, convert_to_tensor=True)\n",
-    "keyword_embeddings_cpu = normalize(keyword_embeddings.cpu().numpy(), axis=1)\n",
-    "\n",
-    "# Function to calculate cosine similarity\n",
-    "def calculate_cosine_similarity(query_embeddings, response_embeddings):\n",
-    "    similarities = {}\n",
-    "    for response_id, embedding in response_embeddings.items():\n",
-    "        # Normalize response embeddings\n",
-    "        response_embedding_numpy = embedding.detach().cpu().numpy()\n",
-    "        response_embedding_normalized = normalize(response_embedding_numpy.reshape(1, -1), axis=1)\n",
-    "        \n",
-    "        # Calculate cosine similarity for all user keywords\n",
-    "        max_similarity = max(\n",
-    "            cosine_similarity(query_embeddings, response_embedding_normalized).flatten()\n",
-    "        )\n",
-    "        similarities[response_id] = max_similarity\n",
-    "    return similarities\n",
-    "\n",
-    "# Step 5: Calculate Cosine Similarity for User Keywords\n",
-    "response_similarities = {}\n",
-    "for response_id, embedding in response_embeddings.items():\n",
-    "    # Calculate cosine similarity\n",
-    "    response_similarities[response_id] = calculate_cosine_similarity(keyword_embeddings_cpu, {response_id: embedding})[response_id]\n",
-    "\n",
-    "# Step 6: Set Dynamic Threshold\n",
-    "# Dynamic threshold based on the top 15% most relevant responses\n",
-    "similarity_scores = list(response_similarities.values())\n",
-    "dynamic_threshold = np.percentile(similarity_scores, 85)\n",
-    "print(f\"Dynamic Threshold: {dynamic_threshold:.4f}\")\n",
-    "\n",
-    "# Step 7: Filter Responses Based on Threshold\n",
-    "filtered_responses = {\n",
-    "    response_id: sim for response_id, sim in response_similarities.items() if sim >= dynamic_threshold\n",
-    "}\n",
-    "\n",
-    "# Fallback: If no responses pass the threshold, select the top 5 most similar responses\n",
-    "TOP_N = 5\n",
-    "if not filtered_responses:\n",
-    "    print(\"\\nNo responses passed the dynamic threshold. Using fallback mechanism.\")\n",
-    "    filtered_responses = dict(\n",
-    "        sorted(response_similarities.items(), key=lambda x: x[1], reverse=True)[:TOP_N]\n",
-    "    )\n",
-    "\n",
-    "# Display filtered responses\n",
-    "print(\"\\nFiltered Responses:\")\n",
-    "print(filtered_responses)\n",
-    "\n",
-    "# Step 8: Fetch Filtered Responses' Text\n",
-    "filtered_texts = [\n",
-    "    \" \".join(df_cleaned.loc[df_cleaned['ResponseID'] == resp_id, 'Responses'].values[0])\n",
-    "    for resp_id in filtered_responses.keys()\n",
-    "]\n",
-    "\n",
-    "# Handle case where no responses are found\n",
-    "if not filtered_texts:\n",
-    "    filtered_texts = [\"No relevant responses found.\"]\n",
-    "\n",
-    "# Step 9: Prepare Input for T5 Summarization\n",
-    "input_text = \"summarize: \" + \" \".join(filtered_texts)\n",
-    "input_ids = t5_tokenizer.encode(input_text, return_tensors=\"pt\", truncation=True)\n",
-    "\n",
-    "# Step 10: Generate Summary with T5\n",
-    "summary_ids = t5_model.generate(input_ids, max_length=200, num_beams=8, length_penalty=1.5, early_stopping=True)\n",
-    "summary = t5_tokenizer.decode(summary_ids[0], skip_special_tokens=True)\n",
-    "\n",
-    "# Display the generated summary\n",
-    "print(\"\\nGenerated Summary:\")\n",
-    "print(summary)\n"
-   ]
-  }
- ],
- "metadata": {
-  "language_info": {
-   "name": "python"
-  }
- },
- "nbformat": 4,
- "nbformat_minor": 2
-}
+import pickle
+import numpy as np
+import pandas as pd
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.preprocessing import normalize
+from sentence_transformers import SentenceTransformer
+from transformers import T5Tokenizer, T5ForConditionalGeneration
+import streamlit as st
+
+# Load Preprocessed Data and Embeddings
+try:
+    df_cleaned = pd.read_csv("df_cleaned.csv")
+    with open("response_embeddings.pkl", "rb") as f:
+        response_embeddings = pickle.load(f)
+except FileNotFoundError as e:
+    st.error("Error: Missing required files. Ensure df_cleaned.csv and response_embeddings.pkl are available.")
+    st.stop()
+
+# Initialize Models
+model = SentenceTransformer('all-mpnet-base-v2')
+t5_tokenizer = T5Tokenizer.from_pretrained("t5-small")
+t5_model = T5ForConditionalGeneration.from_pretrained("t5-small")
+
+# Streamlit Web Interface
+st.title("Open Government Consultation")
+st.markdown("<h3 style='color:blue;'>Use this tool to summarize relevant responses</h3>", unsafe_allow_html=True)
+
+st.write("Please enter the keywords:")
+col1, col2 = st.columns(2)
+
+with col1:
+    keyword1 = st.text_input("Keyword 1")
+
+with col2:
+    keyword2 = st.text_input("Keyword 2")
+
+# Submission Summary
+st.subheader("Submission Summary")
+output = st.empty()
+
+# Process User Input
+if st.button("Generate a new submission"):
+    if keyword1 or keyword2:
+        try:
+            user_keywords = [kw.strip() for kw in [keyword1, keyword2] if kw.strip()]
+            
+            # Debug: Show entered keywords
+            st.write(f"Entered keywords: {user_keywords}")
+
+            # Generate Embeddings for User Keywords
+            keyword_embeddings = model.encode(user_keywords, convert_to_tensor=True)
+            keyword_embeddings_cpu = normalize(keyword_embeddings.cpu().numpy(), axis=1)
+
+            # Function to calculate cosine similarity
+            def calculate_cosine_similarity(query_embeddings, response_embeddings):
+                similarities = {}
+                for response_id, embedding in response_embeddings.items():
+                    response_embedding_numpy = embedding.detach().cpu().numpy()
+                    response_embedding_normalized = normalize(response_embedding_numpy.reshape(1, -1), axis=1)
+                    max_similarity = max(
+                        cosine_similarity(query_embeddings, response_embedding_normalized).flatten()
+                    )
+                    similarities[response_id] = max_similarity
+                return similarities
+
+            # Calculate Cosine Similarity for User Keywords
+            response_similarities = {}
+            for response_id, embedding in response_embeddings.items():
+                response_similarities[response_id] = calculate_cosine_similarity(keyword_embeddings_cpu, {response_id: embedding})[response_id]
+
+            # Dynamic Threshold
+            similarity_scores = list(response_similarities.values())
+            dynamic_threshold = np.percentile(similarity_scores, 85)
+
+            # Filter Responses Based on Threshold
+            filtered_responses = {
+                response_id: sim for response_id, sim in response_similarities.items() if sim >= dynamic_threshold
+            }
+
+            TOP_N = 5
+            if not filtered_responses:
+                filtered_responses = dict(
+                    sorted(response_similarities.items(), key=lambda x: x[1], reverse=True)[:TOP_N]
+                )
+
+            filtered_texts = [
+                " ".join(df_cleaned.loc[df_cleaned['ResponseID'] == resp_id, 'Responses'].values[0])
+                for resp_id in filtered_responses.keys()
+            ]
+
+            if not filtered_texts:
+                filtered_texts = ["No relevant responses found."]
+
+            # Debug: Show filtered responses
+            st.write(f"Filtered Responses: {filtered_texts}")
+
+            # Prepare Input for T5 Summarization
+            input_text = "summarize: " + " ".join(filtered_texts)
+            input_ids = t5_tokenizer.encode(input_text, return_tensors="pt", truncation=True)
+
+            # Generate Summary
+            summary_ids = t5_model.generate(input_ids, max_length=200, num_beams=8, length_penalty=1.5, early_stopping=True)
+            summary = t5_tokenizer.decode(summary_ids[0], skip_special_tokens=True)
+
+            # Display the Summary
+            output.subheader("Generated Summary")
+            output.text(summary)
+
+        except Exception as e:
+            st.error(f"An error occurred during processing: {e}")
+    else:
+        output.text("Please enter at least one keyword to generate a submission.")
