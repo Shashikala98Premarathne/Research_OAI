@@ -9,7 +9,7 @@ Abstractive Summarization Process Flow:
 2. Data Preprocessing.
 3. BERT Tokenization.
 4. Response Embeddings Creation.
-5. Grouping Response Embeddings by ResponseID using Mean Pooling. 
+5. Grouping Response Embeddings by ResponseID using Mean-Pooling. 
 6. User Input (Key-words).
 7. Key-words Embedding creation.
 8. Calculate and Compare Cosine Similarity Scores of Response embeddings and Key-words embeddings. 
