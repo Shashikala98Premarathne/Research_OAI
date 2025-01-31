@@ -48,7 +48,7 @@ def calculate_cosine_similarity(query_embeddings, response_embeddings):
         similarities[response_id] = max_similarity
     return similarities
 
-# Main Execution Block
+# Summarization 
 if st.button("Generate a Summary"):
     if keyword1 or keyword2:
         try:
@@ -63,7 +63,7 @@ if st.button("Generate a Summary"):
             for response_id, embedding in response_embeddings.items():
                 response_similarities[response_id] = calculate_cosine_similarity(keyword_embeddings_cpu, {response_id: embedding})[response_id]
 
-            # Grid-Search to Find Best Threshold
+            # Grid-Search to Find the Best Threshold
             threshold_range = np.arange(0.0, 1.01, 0.01)
             best_threshold = None
             best_rouge1_fmeasure = -float("inf")
