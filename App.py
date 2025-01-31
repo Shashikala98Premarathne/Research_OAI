@@ -40,7 +40,7 @@ with col2:
 def calculate_cosine_similarity(query_embeddings, response_embeddings):
     similarities = {}
     for response_id, embedding in response_embeddings.items():
-        response_embedding_numpy = embedding.detach().cpu().numpy()  # Ensure tensor is on CPU
+        response_embedding_numpy = embedding.detach().cpu().numpy()
         response_embedding_normalized = normalize(response_embedding_numpy.reshape(1, -1), axis=1)
         max_similarity = max(
             cosine_similarity(query_embeddings, response_embedding_normalized).flatten()
@@ -63,7 +63,7 @@ if st.button("Generate a Summary"):
             for response_id, embedding in response_embeddings.items():
                 response_similarities[response_id] = calculate_cosine_similarity(keyword_embeddings_cpu, {response_id: embedding})[response_id]
 
-            # Dynamic Grid Search to Find Best Threshold
+            # Grid-Search to Find Best Threshold
             threshold_range = np.arange(0.0, 1.01, 0.01)
             best_threshold = None
             best_rouge1_fmeasure = -float("inf")
